@@ -1,95 +1,89 @@
 import streamlit as st
-from PIL import Image, ImageEnhance
-import random
+from PIL import Image
+import numpy as np
 
-def get_random_patch(img, patch_size):
-    """
-    Referans görüntüden, belirlenen patch boyutunda rastgele bir bölge seçer.
-    """
-    img_width, img_height = img.size
-    p_w, p_h = patch_size
-    max_x = img_width - p_w
-    max_y = img_height - p_h
-    left = random.randint(0, max(0, max_x))
-    top = random.randint(0, max(0, max_y))
-    patch = img.crop((left, top, left + p_w, top + p_h))
-    return patch
+# Oturumda eğitim sonucu stilini saklamak için
+if 'trained_style' not in st.session_state:
+    st.session_state['trained_style'] = None
 
-def center_crop(image, target_size):
-    """
-    Eğer dönüşüm sonucu patch boyutları değiştiyse, 
-    ortadan istenilen boyuta (target_size) kırpar.
-    """
-    target_w, target_h = target_size
-    w, h = image.size
-    left = (w - target_w) // 2
-    top = (h - target_h) // 2
-    return image.crop((left, top, left + target_w, top + target_h))
+# Kullanıcıya hangi aşamada çalışmak istediğini soralım.
+stage = st.selectbox("Hangi Aşamayı Yapmak İstersiniz?",
+                       ["Eğitim (Training) Aşaması", "Yeni Face Üretim (Generation) Aşaması"])
 
-def apply_random_transform(patch, variation, target_size):
-    """
-    Verilen patch üzerinde, kullanıcı tarafından belirlenen yüzde (variation)
-    oranında rastgele dönüşümler (örn. rotation, brightness değişikliği) uygular.
-    Ardından, dönüşüm sonucu oluşan boyut farklılıklarını ortadan kaldırmak için
-    merkeze kırparak target_size boyutuna getirir.
-    """
-    # Rastgele açı: variation değeri ne kadar yüksekse, dönüş açısı da o kadar geniş olur.
-    angle = random.uniform(-variation/2, variation/2)
-    patch_rotated = patch.rotate(angle, expand=True)
+if stage == "Eğitim (Training) Aşaması":
+    st.header("Eğitim Aşaması")
+    st.write("Lütfen önce eğitim için bir referans görüntü, ardından üç adet farklı 'face' resmini yükleyin. "
+             "Bu resimler, sistemin kendini eğitmesi için kullanılacaktır.")
     
-    # Rastgele brightness (parlaklık) değişikliği:
-    brightness_factor = 1 + random.uniform(-variation/100, variation/100)
-    enhancer = ImageEnhance.Brightness(patch_rotated)
-    patch_bright = enhancer.enhance(brightness_factor)
+    # Eğitim referans görüntüsü
+    train_ref_file = st.file_uploader("Eğitim Referans Görüntünüzü Seçin", type=["jpg", "jpeg", "png"], key="train_ref")
+    if train_ref_file is not None:
+        train_ref_img = Image.open(train_ref_file).convert("RGB")
+        st.image(train_ref_img, caption="Eğitim Referans Görüntü", use_column_width=True)
+    else:
+        st.info("Lütfen eğitim referans görüntüsünü yükleyin.")
     
-    # Dönüşüm sonrası patch boyutu değişmiş olabilir; center crop ile istenilen boyuta getiriyoruz.
-    patch_final = center_crop(patch_bright, target_size)
-    return patch_final
-
-st.title("Derin Doku Sentezi ile Yeni Tasarım Üretme")
-st.write(
-    """
-    Referans görüntünüzü kullanarak, ürünün çizgilerinin farklı bölümlerinden 
-    alınmış gibi, referans tasarıma benzemeyen tamamen yeni bir doku sentezi tasarımı üretiyoruz.
-    """
-)
-
-# Görüntü yükleme bölümü
-uploaded_file = st.file_uploader("Görüntünüzü seçin (jpg, jpeg, png):", type=["jpg", "jpeg", "png"])
-if uploaded_file is not None:
-    reference_image = Image.open(uploaded_file).convert("RGB")
-    st.image(reference_image, caption="Referans Görüntü", use_column_width=True)
+    # Üç adet face resmi
+    face1_file = st.file_uploader("Face Resmi 1", type=["jpg", "jpeg", "png"], key="face1")
+    face2_file = st.file_uploader("Face Resmi 2", type=["jpg", "jpeg", "png"], key="face2")
+    face3_file = st.file_uploader("Face Resmi 3", type=["jpg", "jpeg", "png"], key="face3")
     
-    # Referans görüntü boyutunu gösterelim.
-    ref_w, ref_h = reference_image.size
-    st.write(f"Referans Görüntü Boyutu: {ref_w} x {ref_h} piksel")
-    
-    # Kullanıcıdan yeni tasarımın boyutlarını alalım.
-    out_width = st.number_input("Yeni Tasarım Genişliği (piksel)", min_value=50, value=ref_w)
-    out_height = st.number_input("Yeni Tasarım Yüksekliği (piksel)", min_value=50, value=ref_h)
-    
-    # Kullanıcıya varyasyon oranını (yüzde) soralım.
-    variation = st.slider("Fark Yüzdesi (0-100)", 0, 100, 50)
-    
-    if st.button("Yeni Tasarımı Üret"):
-        # Ürün tasarımımızı 2x2'lik bir mozayik (mosaic) şeklinde oluşturacağız.
-        # Her patch, çıkış görüntüsünün yarısının boyutunda olacak.
-        patch_size = (out_width // 2, out_height // 2)
+    if face1_file and face2_file and face3_file:
+        face_img1 = Image.open(face1_file).convert("RGB")
+        face_img2 = Image.open(face2_file).convert("RGB")
+        face_img3 = Image.open(face3_file).convert("RGB")
         
-        patches = []
-        for i in range(4):
-            # Referans görüntünün farklı bölümlerinden rastgele patch seçimi:
-            patch = get_random_patch(reference_image, patch_size)
-            # Kullanıcının belirttiği varyasyon oranında, rastgele dönüşüm uygula:
-            transformed_patch = apply_random_transform(patch, variation, patch_size)
-            patches.append(transformed_patch)
+        # Eğer eğitim referans yüklendiyse, face resimlerini onun boyutuna göre yeniden boyutlandırıyoruz
+        if train_ref_file is not None:
+            target_size = train_ref_img.size
+        else:
+            target_size = face_img1.size  # veya face_img1'in boyutunu kullanabilirsiniz
         
-        # Yeni tasarım görüntüsü oluşturuluyor.
-        output_image = Image.new("RGB", (patch_size[0] * 2, patch_size[1] * 2))
-        # 2x2 düzeninde patch’leri yerleştir:
-        output_image.paste(patches[0], (0, 0))
-        output_image.paste(patches[1], (patch_size[0], 0))
-        output_image.paste(patches[2], (0, patch_size[1]))
-        output_image.paste(patches[3], (patch_size[0], patch_size[1]))
+        face_img1 = face_img1.resize(target_size)
+        face_img2 = face_img2.resize(target_size)
+        face_img3 = face_img3.resize(target_size)
         
-        st.image(output_image, caption="Yeni Derin Doku Sentezi Tasarımı", use_column_width=True)
+        # Üç face resminin piksel bazında ortalamasını alıyoruz
+        np_face1 = np.array(face_img1).astype(np.float32)
+        np_face2 = np.array(face_img2).astype(np.float32)
+        np_face3 = np.array(face_img3).astype(np.float32)
+        avg_face = (np_face1 + np_face2 + np_face3) / 3.0
+        avg_face = np.clip(avg_face, 0, 255).astype(np.uint8)
+        trained_style = Image.fromarray(avg_face)
+        
+        # Eğitim sonucu stilde oluşan görüntüyü oturumda saklıyoruz
+        st.session_state['trained_style'] = trained_style
+        
+        st.image(trained_style, caption="Eğitim Sonucu - Ortak Stil", use_column_width=True)
+        st.success("Eğitim tamamlandı. Lütfen 'Yeni Face Üretim (Generation) Aşaması'na geçin.")
+    else:
+        st.info("Lütfen üç adet face resmini de yükleyin.")
+
+elif stage == "Yeni Face Üretim (Generation) Aşaması":
+    st.header("Yeni Face Üretim Aşaması")
+    if st.session_state['trained_style'] is None:
+        st.error("Öncelikle Eğitim Aşamasını tamamlayın!")
+    else:
+        st.write("Yeni face üretmek için, istenilen referans görüntüyü yükleyin. "
+                 "Sistem, eğitim aşamasında elde ettiği ortak stili bu referansa uygulayarak yeni bir yüz üretecek.")
+        
+        gen_ref_file = st.file_uploader("Yeni Referans Görüntüyü Seçin", type=["jpg", "jpeg", "png"], key="gen_ref")
+        if gen_ref_file is not None:
+            gen_ref_img = Image.open(gen_ref_file).convert("RGB")
+            st.image(gen_ref_img, caption="Yeni Referans Görüntü", use_column_width=True)
+            
+            # Yeni referans ve eğitim sonucu stilinin boyutunu eşleyelim
+            target_size = gen_ref_img.size
+            trained_style = st.session_state['trained_style'].resize(target_size)
+            
+            # Basit bir blend işlemi ile yeni yüz üretimi:
+            # Çıktı = alpha * yeni referans + (1 - alpha) * eğitim stili
+            # Burada örneğin alpha = 0.5 kullanılarak eşit ağırlıkta karışım elde ediliyor.
+            alpha = 0.5
+            np_gen = np.array(gen_ref_img).astype(np.float32)
+            np_style = np.array(trained_style).astype(np.float32)
+            blended = (alpha * np_gen + (1 - alpha) * np_style)
+            blended = np.clip(blended, 0, 255).astype(np.uint8)
+            output_img = Image.fromarray(blended)
+            
+            st.image(output_img, caption="Üretilen Yeni Face", use_column_width=True)
