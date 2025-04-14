@@ -110,4 +110,33 @@ def quilt_texture(input_img, out_width, out_height, patch_size, overlap):
                     seam_mask = min_error_boundary_cut(existing.T, patch_overlap.T).T  # shape: (overlap, patch_size)
                     for c in range(patch_size):
                         factor = seam_mask[:, c].reshape(-1, 1)  # (overlap, 1)
-                        blended[:overlap, c] = factor * patch_overlap[:, c] + (1 - factor_*
+                        blended[:overlap, c] = factor * patch_overlap[:, c] + (1 - factor) * existing[:, c]
+
+                output[y:y+patch_size, x:x+patch_size] = blended.clip(0, 255).astype(np.uint8)
+
+    return output
+
+# Streamlit arayüzü
+st.title("Photoshop Kalitesinde Texture Sentezi")
+st.write(
+    """
+    Bu uygulama, yüklediğiniz doğal taş/doku görüntüsü üzerinden gelişmiş image quilting algoritması kullanarak
+    Photoshop kalitesinde (kesintisiz, doğallıkta) yeni bir doku görüntüsü sentezler.
+    Lütfen girdi resminizi ve istediğiniz çıkış boyutlarını, patch ve overlap boyutlarını girin.
+    """
+)
+uploaded_file = st.file_uploader("Görüntü Dosyanızı Seçin (jpg, jpeg, png)", type=["jpg", "jpeg", "png"])
+if uploaded_file is not None:
+    input_pil = Image.open(uploaded_file).convert("RGB")
+    input_img = np.array(input_pil)
+    st.image(input_pil, caption="Girdi Görüntü", use_column_width=True)
+    
+    out_width = st.number_input("Çıkış Görüntü Genişliği (piksel)", min_value=50, value=input_pil.width)
+    out_height = st.number_input("Çıkış Görüntü Yüksekliği (piksel)", min_value=50, value=input_pil.height)
+    patch_size = st.number_input("Patch Boyutu (piksel)", min_value=10, value=50)
+    overlap = st.number_input("Örtüşme Boyutu (piksel)", min_value=1, value=10)
+    
+    if st.button("Yeni Görüntüyü Üret"):
+        output_img = quilt_texture(input_img, out_width, out_height, patch_size, overlap)
+        output_pil = Image.fromarray(output_img)
+        st.image(output_pil, caption="Oluşturulan Görüntü", use_column_width=True)
