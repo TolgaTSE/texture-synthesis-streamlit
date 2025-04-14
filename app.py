@@ -1,93 +1,95 @@
 import streamlit as st
-from PIL import Image
-import cv2
-import numpy as np
+from PIL import Image, ImageEnhance
+import random
 
-def generate_variant(image, diff_percent):
+def get_random_patch(img, patch_size):
     """
-    Verilen görüntü üzerinde, diff_percent parametresi kadar maksimum yer değiştirme
-    (displacement) uygulayarak yeni bir varyant üretir.
-    Bu işlem, görüntüdeki yapısal detayları biraz rastgele kaydırır;
-    dolayısıyla renkler korunurken, doku ve desen detaylarında istenen fark ortaya çıkar.
+    Referans görüntüden, belirlenen patch boyutunda rastgele bir bölge seçer.
     """
-    # PIL görüntüyü numpy array'e çeviriyoruz.
-    img = np.array(image)
-    
-    # Görüntü boyutlarını alıyoruz.
-    h, w = img.shape[:2]
-    
-    # Her piksel için koordinat ızgarası oluşturuyoruz.
-    x, y = np.meshgrid(np.arange(w), np.arange(h))
-    x = x.astype(np.float32)
-    y = y.astype(np.float32)
-    
-    # Maksimum kayma (max displacement) piksel cinsinden:
-    # Örneğin, diff_percent=100 için maksimum 10 piksel kayma uygulanacak.
-    max_disp = diff_percent / 100 * 10
-    
-    # Rastgele x ve y kaymaları oluşturuyoruz.
-    random_dx = np.random.uniform(-max_disp, max_disp, size=(h, w)).astype(np.float32)
-    random_dy = np.random.uniform(-max_disp, max_disp, size=(h, w)).astype(np.float32)
-    
-    # Yeni koordinat haritalarını hesaplıyoruz.
-    map_x = (x + random_dx).clip(0, w - 1)
-    map_y = (y + random_dy).clip(0, h - 1)
-    
-    # OpenCV'nin remap fonksiyonu ile görüntüyü yeni koordinatlara göre yeniden yapılandırıyoruz.
-    variant = cv2.remap(img, map_x, map_y, interpolation=cv2.INTER_LINEAR)
-    return Image.fromarray(variant)
+    img_width, img_height = img.size
+    p_w, p_h = patch_size
+    max_x = img_width - p_w
+    max_y = img_height - p_h
+    left = random.randint(0, max(0, max_x))
+    top = random.randint(0, max(0, max_y))
+    patch = img.crop((left, top, left + p_w, top + p_h))
+    return patch
 
-st.title("Tam Blok Tasarım Üretme Uygulaması (Modifiye Desen)")
+def center_crop(image, target_size):
+    """
+    Eğer dönüşüm sonucu patch boyutları değiştiyse, 
+    ortadan istenilen boyuta (target_size) kırpar.
+    """
+    target_w, target_h = target_size
+    w, h = image.size
+    left = (w - target_w) // 2
+    top = (h - target_h) // 2
+    return image.crop((left, top, left + target_w, top + target_h))
+
+def apply_random_transform(patch, variation, target_size):
+    """
+    Verilen patch üzerinde, kullanıcı tarafından belirlenen yüzde (variation)
+    oranında rastgele dönüşümler (örn. rotation, brightness değişikliği) uygular.
+    Ardından, dönüşüm sonucu oluşan boyut farklılıklarını ortadan kaldırmak için
+    merkeze kırparak target_size boyutuna getirir.
+    """
+    # Rastgele açı: variation değeri ne kadar yüksekse, dönüş açısı da o kadar geniş olur.
+    angle = random.uniform(-variation/2, variation/2)
+    patch_rotated = patch.rotate(angle, expand=True)
+    
+    # Rastgele brightness (parlaklık) değişikliği:
+    brightness_factor = 1 + random.uniform(-variation/100, variation/100)
+    enhancer = ImageEnhance.Brightness(patch_rotated)
+    patch_bright = enhancer.enhance(brightness_factor)
+    
+    # Dönüşüm sonrası patch boyutu değişmiş olabilir; center crop ile istenilen boyuta getiriyoruz.
+    patch_final = center_crop(patch_bright, target_size)
+    return patch_final
+
+st.title("Derin Doku Sentezi ile Yeni Tasarım Üretme")
 st.write(
     """
-    Referans görüntüyü kullanarak, farklılık oranına bağlı olarak üç alternatif varyant (desen)
-    üreteceğiz. Renkler aynı kalırken; doku, damar, desen detaylarında, vermek istediğiniz
-    yüzde kadar fark olacak.
+    Referans görüntünüzü kullanarak, ürünün çizgilerinin farklı bölümlerinden 
+    alınmış gibi, referans tasarıma benzemeyen tamamen yeni bir doku sentezi tasarımı üretiyoruz.
     """
 )
 
 # Görüntü yükleme bölümü
 uploaded_file = st.file_uploader("Görüntünüzü seçin (jpg, jpeg, png):", type=["jpg", "jpeg", "png"])
 if uploaded_file is not None:
-    base_image = Image.open(uploaded_file).convert("RGB")
-    st.image(base_image, caption="Referans Görüntü", use_column_width=True)
-
-    # Orijinal boyutları alalım.
-    w, h = base_image.size
-    st.write(f"Görüntü Boyutu: {w} x {h} piksel")
+    reference_image = Image.open(uploaded_file).convert("RGB")
+    st.image(reference_image, caption="Referans Görüntü", use_column_width=True)
     
-    # Gerekirse görüntüyü yeniden boyutlandırma (isteğe bağlı)
-    new_width = st.number_input("Yeni Genişlik (piksel)", min_value=10, value=w)
-    new_height = st.number_input("Yeni Yükseklik (piksel)", min_value=10, value=h)
-    if new_width != w or new_height != h:
-        base_image = base_image.resize((new_width, new_height))
-        w, h = base_image.size
-        st.image(base_image, caption="Yeniden Boyutlandırılmış Görüntü", use_column_width=True)
+    # Referans görüntü boyutunu gösterelim.
+    ref_w, ref_h = reference_image.size
+    st.write(f"Referans Görüntü Boyutu: {ref_w} x {ref_h} piksel")
     
-    # Kullanıcı, referans görüntü ile diğer varyant arasındaki fark yüzdesini belirlesin.
-    diff_percent = st.slider("Fark Yüzdesi (0-100)", min_value=0, max_value=100, value=20, step=1)
+    # Kullanıcıdan yeni tasarımın boyutlarını alalım.
+    out_width = st.number_input("Yeni Tasarım Genişliği (piksel)", min_value=50, value=ref_w)
+    out_height = st.number_input("Yeni Tasarım Yüksekliği (piksel)", min_value=50, value=ref_h)
     
-    if st.button("Tam Blok Tasarımını Üret"):
-        # Referans görüntü sabit, diğer varyantlar için generate_variant fonksiyonu kullanılıyor.
-        Q1 = base_image  # Orijinal referans
-        Q2 = generate_variant(base_image, diff_percent)
-        Q3 = generate_variant(base_image, diff_percent)
-        Q4 = generate_variant(base_image, diff_percent)
+    # Kullanıcıya varyasyon oranını (yüzde) soralım.
+    variation = st.slider("Fark Yüzdesi (0-100)", 0, 100, 50)
+    
+    if st.button("Yeni Tasarımı Üret"):
+        # Ürün tasarımımızı 2x2'lik bir mozayik (mosaic) şeklinde oluşturacağız.
+        # Her patch, çıkış görüntüsünün yarısının boyutunda olacak.
+        patch_size = (out_width // 2, out_height // 2)
         
-        # 2x2'lik tam blok tasarımı oluşturmak için yeni büyük bir görüntü oluşturup,
-        # dört varyantı belirtilen koordinatlara yapıştırıyoruz.
-        block_width = new_width * 2
-        block_height = new_height * 2
+        patches = []
+        for i in range(4):
+            # Referans görüntünün farklı bölümlerinden rastgele patch seçimi:
+            patch = get_random_patch(reference_image, patch_size)
+            # Kullanıcının belirttiği varyasyon oranında, rastgele dönüşüm uygula:
+            transformed_patch = apply_random_transform(patch, variation, patch_size)
+            patches.append(transformed_patch)
         
-        full_block = Image.new('RGB', (block_width, block_height))
-        full_block.paste(Q1, (0, 0))
-        full_block.paste(Q2, (new_width, 0))
-        full_block.paste(Q3, (0, new_height))
-        full_block.paste(Q4, (new_width, new_height))
+        # Yeni tasarım görüntüsü oluşturuluyor.
+        output_image = Image.new("RGB", (patch_size[0] * 2, patch_size[1] * 2))
+        # 2x2 düzeninde patch’leri yerleştir:
+        output_image.paste(patches[0], (0, 0))
+        output_image.paste(patches[1], (patch_size[0], 0))
+        output_image.paste(patches[2], (0, patch_size[1]))
+        output_image.paste(patches[3], (patch_size[0], patch_size[1]))
         
-        st.image(full_block, caption="Tam Blok Tasarımı", use_column_width=True)
-        
-        st.write("Üretilen Varyant Görseller:")
-        st.image([Q1, Q2, Q3, Q4],
-                 caption=["Referans", "Varyant 1", "Varyant 2", "Varyant 3"],
-                 use_column_width=True)
+        st.image(output_image, caption="Yeni Derin Doku Sentezi Tasarımı", use_column_width=True)
