@@ -6,13 +6,12 @@ import random
 
 def min_error_boundary_cut(overlap_existing, overlap_new):
     """
-    Verilen iki overlap bölge için (örneğin, soldaki veya üstteki) dinamik programlama ile
+    İki overlap bölge (örneğin, soldaki veya üstteki) için dinamik programlama ile 
     minimum hata sınır kesme (seam carving benzeri) yapar. 
-    Basitleştirilmiş bu örnekte, overlap bölgesindeki pikseller arasındaki kare hata farkını
-    hesaplayıp, her satır (ya da sütun) için minimum hata seam’i buluyoruz.
-    
     Bu fonksiyon, overlap_new için bir mask döndürür: mask = 1 olan bölgeler yeni patch'ten,
-    mask = 0 olan bölgeler mevcut çıktının alınacağı yerlerdir.
+    mask = 0 olan bölgeler mevcut çıktının korunacağı yerlerdir.
+    overlap_existing ve overlap_new boyutları (H x W x 3) olmalıdır.
+    Dönen seam_mask boyutu: (H x W) float32
     """
     error = np.sum((overlap_existing - overlap_new) ** 2, axis=2)
     H, W = error.shape
@@ -50,10 +49,10 @@ def min_error_boundary_cut(overlap_existing, overlap_new):
 def quilt_texture(input_img, out_width, out_height, patch_size, overlap):
     """
     Image quilting algoritması:
-    - input_img: Girdi texture (H x W x 3), numpy array (uint8)
-    - out_width, out_height: Çıkış görüntüsünün boyutları
-    - patch_size: Kullanılacak patch boyutu (kare)
-    - overlap: Her patch arasında kullanılacak örtüşme boyutu
+      - input_img: Girdi texture (H x W x 3), numpy array (uint8)
+      - out_width, out_height: Çıkış görüntüsünün boyutları
+      - patch_size: Kullanılacak patch boyutu (kare)
+      - overlap: Her patch arasında kullanılacak örtüşme boyutu
     """
     input_h, input_w, _ = input_img.shape
     output = np.zeros((out_height, out_width, 3), dtype=np.uint8)
@@ -67,6 +66,7 @@ def quilt_texture(input_img, out_width, out_height, patch_size, overlap):
             y = i * step
             x = j * step
 
+            # İlk patchi rastgele seç (sol üst köşe)
             if i == 0 and j == 0:
                 rand_y = random.randint(0, input_h - patch_size)
                 rand_x = random.randint(0, input_w - patch_size)
@@ -81,48 +81,56 @@ def quilt_texture(input_img, out_width, out_height, patch_size, overlap):
                     rand_x = random.randint(0, input_w - patch_size)
                     candidate = input_img[rand_y:rand_y+patch_size, rand_x:rand_x+patch_size].copy()
                     error = 0
-                    if j > 0:  # Soldaki örtüşme
-                        existing = output[y:y+patch_size, x:x+overlap].astype(np.float32)
-                        cand_overlap = candidate[:, :overlap].astype(np.float32)
-                        error += np.sum((existing - cand_overlap) ** 2)
-                    if i > 0:  # Üstteki örtüşme
-                        existing = output[y:y+overlap, x:x+patch_size].astype(np.float32)
-                        cand_overlap = candidate[:overlap, :].astype(np.float32)
-                        error += np.sum((existing - cand_overlap) ** 2)
+                    # Soldaki overlap hata hesaplaması (varsa)
+                    if j > 0:
+                        actual_overlap = min(overlap, out_width - x)
+                        existing_left = output[y:y+patch_size, x:x+actual_overlap].astype(np.float32)
+                        cand_left = candidate[:, :actual_overlap].astype(np.float32)
+                        error += np.sum((existing_left - cand_left) ** 2)
+                    # Üstteki overlap hata hesaplaması (varsa)
+                    if i > 0:
+                        actual_overlap_v = min(overlap, out_height - y)
+                        existing_top = output[y:y+actual_overlap_v, x:x+patch_size].astype(np.float32)
+                        cand_top = candidate[:actual_overlap_v, :].astype(np.float32)
+                        error += np.sum((existing_top - cand_top) ** 2)
                     candidates.append(candidate)
                     errors.append(error)
                 best_idx = np.argmin(errors)
                 patch = candidates[best_idx].copy()
-
                 blended = patch.copy().astype(np.float32)
+
+                # Soldaki overlap (yatay seam) varsa:
                 if j > 0:
-                    # Soldaki overlap için seam blending
-                    existing = output[y:y+patch_size, x:x+overlap].astype(np.float32)
-                    patch_overlap = patch[:, :overlap].astype(np.float32)
-                    seam_mask = min_error_boundary_cut(existing, patch_overlap)  # shape: (patch_size, overlap)
+                    actual_overlap = min(overlap, out_width - x)
+                    existing_left = output[y:y+patch_size, x:x+actual_overlap].astype(np.float32)
+                    cand_left = patch[:, :actual_overlap].astype(np.float32)
+                    seam_mask = min_error_boundary_cut(existing_left, cand_left)  # shape: (patch_size, actual_overlap)
+                    # Her satır için seam mask uygulaması
                     for r in range(patch_size):
-                        factor = seam_mask[r, :].reshape(-1, 1)  # Yeniden şekillendiriyoruz: (overlap, 1)
-                        blended[r, :overlap] = factor * patch_overlap[r] + (1 - factor) * existing[r]
+                        factor = seam_mask[r, :].reshape(-1, 1)  # (actual_overlap, 1)
+                        blended[r, :actual_overlap] = factor * cand_left[r] + (1 - factor) * existing_left[r]
+
+                # Üstteki overlap (dikey seam) varsa:
                 if i > 0:
-                    # Üstteki overlap için seam blending
-                    existing = output[y:y+overlap, x:x+patch_size].astype(np.float32)
-                    patch_overlap = patch[:overlap, :].astype(np.float32)
-                    seam_mask = min_error_boundary_cut(existing.T, patch_overlap.T).T  # shape: (overlap, patch_size)
+                    actual_overlap_v = min(overlap, out_height - y)
+                    existing_top = output[y:y+actual_overlap_v, x:x+patch_size].astype(np.float32)
+                    cand_top = patch[:actual_overlap_v, :].astype(np.float32)
+                    seam_mask = min_error_boundary_cut(existing_top.T, cand_top.T).T  # shape: (actual_overlap_v, patch_size)
                     for c in range(patch_size):
-                        factor = seam_mask[:, c].reshape(-1, 1)  # (overlap, 1)
-                        blended[:overlap, c] = factor * patch_overlap[:, c] + (1 - factor) * existing[:, c]
+                        factor = seam_mask[:, c].reshape(-1, 1)  # (actual_overlap_v, 1)
+                        blended[:actual_overlap_v, c] = factor * cand_top[:, c] + (1 - factor) * existing_top[:, c]
 
                 output[y:y+patch_size, x:x+patch_size] = blended.clip(0, 255).astype(np.uint8)
 
     return output
 
-# Streamlit arayüzü
+# Streamlit Arayüzü
 st.title("Photoshop Kalitesinde Texture Sentezi")
 st.write(
     """
     Bu uygulama, yüklediğiniz doğal taş/doku görüntüsü üzerinden gelişmiş image quilting algoritması kullanarak
     Photoshop kalitesinde (kesintisiz, doğallıkta) yeni bir doku görüntüsü sentezler.
-    Lütfen girdi resminizi ve istediğiniz çıkış boyutlarını, patch ve overlap boyutlarını girin.
+    Lütfen girdi resminizi ve istediğiniz çıkış boyutlarını, patch boyutunu ve örtüşme boyutunu girin.
     """
 )
 uploaded_file = st.file_uploader("Görüntü Dosyanızı Seçin (jpg, jpeg, png)", type=["jpg", "jpeg", "png"])
