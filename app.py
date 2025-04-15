@@ -1,67 +1,126 @@
 import streamlit as st
-from diffusers import StableDiffusionInpaintPipeline
-import torch
-from PIL import Image, ImageDraw
+import PIL.Image
+from PIL import ImageCms
 import numpy as np
+import os
+from pathlib import Path
 
-st.title("Deep Learning Outpainting App")
-st.write(
-    """
-    Bu uygulamada, bir resim yükleyip kenarlara ek boşluklar belirleyeceksiniz. 
-    Uygulama, orijinal resmi bozmadan genişletilmiş tuvali oluşturur ve 
-    Stable Diffusion Inpainting ile boşlukları "doğal" bir şekilde doldurur.
-    """
-)
-
-# 1. Resim Yükleme
-uploaded_file = st.file_uploader("Resminizi yükleyin (jpg, jpeg, png)", type=["jpg", "jpeg", "png"])
-if uploaded_file is not None:
-    input_image = Image.open(uploaded_file).convert("RGB")
-    st.image(input_image, caption="Orijinal Resim", use_column_width=True)
-    
-    # 2. Margin (boşluk) Miktarlarını Belirleme
-    st.write("Lütfen eklemek istediğiniz boşluk miktarlarını (piksel cinsinden) girin:")
-    margin_top = st.number_input("Üst Boşluk", value=50, min_value=0)
-    margin_bottom = st.number_input("Alt Boşluk", value=50, min_value=0)
-    margin_left = st.number_input("Sol Boşluk", value=50, min_value=0)
-    margin_right = st.number_input("Sağ Boşluk", value=50, min_value=0)
-    
-    # 3. Yeni Tuval Oluşturma & Maske Üretimi
-    orig_width, orig_height = input_image.size
-    new_width = orig_width + margin_left + margin_right
-    new_height = orig_height + margin_top + margin_bottom
-
-    # Yeni tuvali, orijinal resmin medyan renk değerine göre dolduralım.
-    img_np = np.array(input_image)
-    median_color = tuple(np.median(img_np.reshape(-1, 3), axis=0).astype(np.uint8))
-    extended_image = Image.new("RGB", (new_width, new_height), median_color)
-    # Orijinal resmi, genişletilmiş tuvalin ortasına yerleştiriyoruz.
-    extended_image.paste(input_image, (margin_left, margin_top))
-    
-    # Maske: Orijinal resmin yer aldığı alan siyah (0), diğer yerler beyaz (255)
-    mask = Image.new("L", (new_width, new_height), 255)
-    draw = ImageDraw.Draw(mask)
-    draw.rectangle((margin_left, margin_top, margin_left + orig_width, margin_top + orig_height), fill=0)
-    
-    st.image(extended_image, caption="Genişletilmiş Tuval (Başlangıç)", use_column_width=True)
-    st.image(mask, caption="Maske", use_column_width=True)
-    
-    # 4. Prompt Girişi
-    prompt = st.text_input("Outpainting için prompt girin", "continue the scene naturally")
-    
-    # 5. Model Yükleme & Outpainting İşlemi
-    if st.button("Outpaint Uygula"):
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        st.write(f"Model {device} üzerinde çalışıyor...")
-        pipe = StableDiffusionInpaintPipeline.from_pretrained(
-            "stabilityai/stable-diffusion-inpainting",
-            revision="fp16",
-            torch_dtype=torch.float16,
-        )
-        pipe = pipe.to(device)
+def apply_icc_profile(image_path, icc_path):
+    """Apply ICC profile to image"""
+    try:
+        # Open the image
+        img = PIL.Image.open(image_path)
         
-        with torch.autocast(device):
-            result = pipe(prompt=prompt, image=extended_image, mask_image=mask)
-        outpainted_image = result.images[0]
+        # Create color transform
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+            
+        # Load ICC profile
+        if icc_path:
+            input_profile = ImageCms.getOpenProfile(icc_path)
+            output_profile = ImageCms.createProfile('sRGB')
+            
+            # Create transform
+            transform = ImageCms.buildTransformFromOpenProfiles(
+                input_profile, output_profile, 'RGB', 'RGB')
+            
+            # Apply transform
+            img = ImageCms.applyTransform(img, transform)
+            
+        return img
+    except Exception as e:
+        st.error(f"Error applying ICC profile: {str(e)}")
+        return None
+
+def apply_lighting_condition(img, temperature, brightness):
+    """Apply lighting condition to image"""
+    try:
+        # Convert to numpy array
+        img_array = np.array(img).astype(float)
         
-        st.image(outpainted_image, caption="Outpainted Image", use_column_width=True)
+        # Temperature adjustment (simple approximation)
+        # Warmer temperatures increase red, decrease blue
+        # Cooler temperatures increase blue, decrease red
+        temperature_factor = (temperature - 5000) / 5000  # Normalize around 5000K
+        
+        # Adjust RGB channels
+        img_array[:,:,0] *= (1 + 0.2 * temperature_factor)  # Red
+        img_array[:,:,2] *= (1 - 0.2 * temperature_factor)  # Blue
+        
+        # Brightness adjustment
+        img_array *= brightness
+        
+        # Clip values to valid range
+        img_array = np.clip(img_array, 0, 255)
+        
+        # Convert back to uint8
+        img_array = img_array.astype(np.uint8)
+        
+        return PIL.Image.fromarray(img_array)
+    except Exception as e:
+        st.error(f"Error applying lighting condition: {str(e)}")
+        return None
+
+def main():
+    st.title("Tile Lighting Simulator")
+    
+    # File uploaders
+    image_file = st.file_uploader("Upload Tile Image (TIFF)", type=['tiff', 'tif'])
+    icc_file = st.file_uploader("Upload ICC Profile", type=['icc'])
+    
+    # Lighting controls
+    temperature = st.slider("Color Temperature (K)", 2700, 6500, 5000)
+    brightness = st.slider("Brightness", 0.5, 1.5, 1.0)
+    
+    if image_file and icc_file:
+        # Save uploaded files temporarily
+        temp_image_path = "temp_image.tiff"
+        temp_icc_path = "temp_icc.icc"
+        
+        with open(temp_image_path, "wb") as f:
+            f.write(image_file.getbuffer())
+        with open(temp_icc_path, "wb") as f:
+            f.write(icc_file.getbuffer())
+            
+        # Process image
+        try:
+            # Apply ICC profile
+            img_with_icc = apply_icc_profile(temp_image_path, temp_icc_path)
+            
+            if img_with_icc:
+                # Apply lighting condition
+                final_img = apply_lighting_condition(img_with_icc, temperature, brightness)
+                
+                if final_img:
+                    # Display results
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.subheader("Original Image")
+                        st.image(img_with_icc)
+                    with col2:
+                        st.subheader("Adjusted Image")
+                        st.image(final_img)
+                        
+                    # Add download button for processed image
+                    if st.button("Download Processed Image"):
+                        final_img.save("processed_image.png")
+                        with open("processed_image.png", "rb") as file:
+                            st.download_button(
+                                label="Download Image",
+                                data=file,
+                                file_name="processed_image.png",
+                                mime="image/png"
+                            )
+        
+        except Exception as e:
+            st.error(f"Error processing image: {str(e)}")
+            
+        # Cleanup temporary files
+        try:
+            os.remove(temp_image_path)
+            os.remove(temp_icc_path)
+        except:
+            pass
+
+if __name__ == "__main__":
+    main()
