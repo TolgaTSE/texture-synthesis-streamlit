@@ -5,6 +5,16 @@ import numpy as np
 import os
 from pathlib import Path
 
+# Eğer PIL.ImageCms modülünde INTENT_PERCEPTUAL tanımlı değilse, manuel olarak tanımlıyoruz.
+if not hasattr(ImageCms, "INTENT_PERCEPTUAL"):
+    ImageCms.INTENT_PERCEPTUAL = 0
+if not hasattr(ImageCms, "INTENT_RELATIVE_COLORIMETRIC"):
+    ImageCms.INTENT_RELATIVE_COLORIMETRIC = 1
+if not hasattr(ImageCms, "INTENT_SATURATION"):
+    ImageCms.INTENT_SATURATION = 2
+if not hasattr(ImageCms, "INTENT_ABSOLUTE_COLORIMETRIC"):
+    ImageCms.INTENT_ABSOLUTE_COLORIMETRIC = 3
+
 def apply_icc_profile(image_path, icc_path):
     """Apply ICC profile to image"""
     try:
@@ -20,7 +30,7 @@ def apply_icc_profile(image_path, icc_path):
             input_profile = ImageCms.getOpenProfile(icc_path)
             output_profile = ImageCms.createProfile('sRGB')
             
-            # Create transform with rendering intent parameter (Item 3 eklenmiştir)
+            # Create transform with rendering intent parameter (perceptual)
             transform = ImageCms.buildTransformFromOpenProfiles(
                 input_profile, output_profile, 'RGB', 'RGB',
                 renderingIntent=ImageCms.INTENT_PERCEPTUAL
