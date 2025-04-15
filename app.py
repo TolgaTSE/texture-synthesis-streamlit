@@ -20,9 +20,11 @@ def apply_icc_profile(image_path, icc_path):
             input_profile = ImageCms.getOpenProfile(icc_path)
             output_profile = ImageCms.createProfile('sRGB')
             
-            # Create transform
+            # Create transform with rendering intent parameter (Item 3 eklenmiştir)
             transform = ImageCms.buildTransformFromOpenProfiles(
-                input_profile, output_profile, 'RGB', 'RGB')
+                input_profile, output_profile, 'RGB', 'RGB',
+                renderingIntent=ImageCms.INTENT_PERCEPTUAL
+            )
             
             # Apply transform
             img = ImageCms.applyTransform(img, transform)
